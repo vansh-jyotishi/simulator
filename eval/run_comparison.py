@@ -29,10 +29,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from env.scenario import load_scenario, resolve_scenario_path
+from env.spectrum_env import make_env  # the only env import allowed outside env/ (INTERFACE.md)
 from eval.runner import BUILTIN_TRUTH_CLASSES, discover_registry, load_extra, run_episode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def resolve_scenario_path(path: str | Path) -> Path:
+    """Relative paths resolve against the cwd first, then the repo root (mirrors the scenario loader)."""
+    p = Path(path)
+    if p.is_absolute() or p.exists():
+        return p.resolve()
+    alt = REPO_ROOT / p
+    if alt.exists():
+        return alt.resolve()
+    raise FileNotFoundError(f"scenario file not found: {path} (tried cwd and {REPO_ROOT})")
+
+
+def scenario_name(path: str | Path) -> str:
+    """Scenario ``name`` field, obtained through ``make_env`` so eval never imports env internals."""
+    return str(make_env(path, 0).cfg.name)
 
 TABLE_COLUMNS = [
     ("poi", "POI", "{:.3f}"),
@@ -102,7 +118,10 @@ def build_schedulers(names: list[str], extras: list[str], kwargs_json: str | Non
             raise SystemExit(f"unknown scheduler {n!r}; available: {sorted(reg)}")
         out[n] = (reg[n], dict(kwargs.get(n, {})))
     for spec in extras or []:
-        alias, cls = load_extra(spec)
+        try:
+            alias, cls = load_extra(spec)
+        except (ValueError, ImportError, AttributeError) as e:
+            raise SystemExit(f"--extra {spec!r} refused: {e}") from e
         if alias in out:
             raise SystemExit(f"--extra alias {alias!r} collides with an existing label")
         out[alias] = (cls, dict(kwargs.get(alias, {})))
@@ -134,7 +153,7 @@ def run_grid(scenarios: list[str], seeds: list[int], heldout_seeds: list[int], s
     splits = [("train", seeds), ("heldout", heldout_seeds)]
     for sc in scenarios:
         sc_path = resolve_scenario_path(sc)
-        sc_name = load_scenario(sc_path).name
+        sc_name = scenario_name(sc_path)
         sc_split = "heldout" if sc_path.name.startswith("heldout_") else "train"
         for label, (cls, kw) in schedulers.items():
             for split, seed_list in splits:

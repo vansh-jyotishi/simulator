@@ -24,6 +24,13 @@ Definitions
   ``|t_pred - nearest burst start on c|`` averaged over predictions whose channel
   has >= 1 burst; ``t_pred`` outside ``[0, T)`` is incorrect and excluded from the
   error; dropped predictions are counted only in ``n_dropped_predictions``.
+
+Notes
+-----
+Public API: :func:`compute_metrics`, :class:`MetricsResult`, :func:`is_nan` and the
+``METRIC_KEYS`` tuple (the judged subset of :meth:`MetricsResult.keys`).
+``us_per_decision_mean`` / ``us_per_decision_p99`` are never set here; the evaluation
+harness fills them after timing the agent.
 """
 from __future__ import annotations
 
@@ -49,11 +56,82 @@ METRIC_KEYS = (
 
 
 def _ratio(num: float, den: float) -> float:
+    """Return ``num / den`` as a float, or ``NaN`` when ``den`` is zero (never raises)."""
     return float(num) / float(den) if den else NAN
 
 
 @dataclass
 class MetricsResult:
+    """Flat container for every metric produced by :func:`compute_metrics`.
+
+    Ratios default to ``NaN`` and counts to ``0`` so a partially filled result is
+    still well-formed.  Defaulted fields may be added freely; only ``caught_bursts``
+    is excluded from :meth:`to_dict` and :meth:`keys`.
+
+    Attributes
+    ----------
+    sensor_pd : float
+        ``tp / (tp + fn)`` over non-blind dwells.
+    effective_pd : float
+        ``tp / #(s_at == 1)``; blind dwells on an occupied cell count as misses.
+    sensor_pfa : float
+        ``fp / (fp + tn)`` over non-blind dwells.
+    n_tp, n_fp, n_fn, n_tn : int
+        Dwell-level confusion counts; blind dwells are excluded from all four.
+    n_blind : int
+        Number of blind dwells (the receiver was retuning and observed nothing).
+    poi : float
+        Probability of intercept, ``n_caught / n_bursts``.
+    poi_periodic, poi_agile, poi_scanning : float
+        POI restricted to bursts of that ``Burst.emitter_type``; ``NaN`` for absent types.
+    poi_time : float
+        Time-coverage POI: fraction of occupied ``(emitter, channel, t)`` cells within
+        ``[0, t)`` whose dwell was a true positive.
+    n_bursts : int
+        Number of bursts that have started before ``t`` (every burst once ``t == T``).
+    n_caught : int
+        Number of those bursts caught by at least one true positive dwell.
+    mean_tti, median_tti : float
+        Mean / median time-to-intercept ``t_first_tp - t_start`` over caught bursts.
+    intercept_rate_per_dwell : float
+        ``n_caught / t``.
+    intercept_rate_per_s : float
+        ``n_caught / (t * dwell_s)``.
+    discovery_ratio : float
+        Fraction of the ``M`` emitters with at least one true positive dwell.
+    n_predictions : int
+        Number of predictions with ``status == "issued"`` (the only ones scored).
+    n_dropped_predictions : int
+        Number of predictions with ``status == "dropped"``; counted but never scored.
+    correct_pred_pct : float
+        Percentage of issued predictions with an occupied cell within ``delta_guard``
+        of ``t_pred`` on the predicted channel.
+    avg_pred_time_error : float
+        Mean ``|t_pred - nearest burst start on c|`` over in-range predictions whose
+        channel has at least one burst.
+    total_reward : float
+        Sum of ``hist.rewards[:t]``.
+    mean_reward : float
+        ``total_reward / t``.
+    blind_fraction : float
+        ``n_blind / t``.
+    switch_rate : float
+        ``n_switches / t``.
+    n_switches : int
+        Number of dwells flagged ``switched`` (channel changed from the previous dwell).
+    us_per_decision_mean, us_per_decision_p99 : float
+        Agent decision latency in microseconds; left ``NaN`` here and filled by the
+        evaluation harness.
+    n_dwells : int
+        Number of executed slots scored, i.e. ``t``.
+    n_emitters : int
+        ``M``, the number of emitters in the truth.
+    n_bursts_total : int
+        Total number of bursts in the truth regardless of ``t``.
+    caught_bursts : tuple of int
+        Indices into :func:`oracle.truth_tracker.segment_bursts` of the caught bursts;
+        omitted from :meth:`to_dict` and from ``repr``.
+    """
     # detection
     sensor_pd: float = NAN
     effective_pd: float = NAN
@@ -97,17 +175,56 @@ class MetricsResult:
     caught_bursts: tuple[int, ...] = field(default_factory=tuple, repr=False)  # indices into segment_bursts()
 
     def to_dict(self) -> dict:
+        """Return the metrics as a flat ``dict`` keyed by field name.
+
+        Returns
+        -------
+        dict
+            One entry per dataclass field except ``caught_bursts``; values are plain
+            ``float`` / ``int`` scalars (``NaN`` for undefined ratios).
+        """
         d = asdict(self)
         d.pop("caught_bursts", None)
         return d
 
     @classmethod
     def keys(cls) -> tuple[str, ...]:
+        """Return the field names in the order :meth:`to_dict` emits them.
+
+        Returns
+        -------
+        tuple of str
+            Every dataclass field name except ``caught_bursts``, in declaration order.
+        """
         return tuple(f.name for f in fields(cls) if f.name != "caught_bursts")
 
 
 def _score_predictions(truth: Truth, bursts: list[Burst], predictions: Iterable[Prediction],
                        delta_guard: int) -> tuple[int, int, float, float]:
+    """Score issued predictions against the truth occupancy grid.
+
+    Parameters
+    ----------
+    truth : Truth
+        Ground truth; ``truth.S`` of shape ``(N, T)`` is consulted.
+    bursts : list of Burst
+        Output of :func:`oracle.truth_tracker.segment_bursts`, used for burst starts per channel.
+    predictions : iterable of Prediction
+        Predictions to score; ``status`` defaults to ``"issued"`` when the object lacks it.
+    delta_guard : int
+        Half-width of the window ``[t_pred - delta_guard, t_pred + delta_guard]``.
+
+    Returns
+    -------
+    tuple of (int, int, float, float)
+        ``(n_issued, n_dropped, correct_pct, mean_abs_time_error)``; the last two are
+        ``NaN`` when no prediction was issued / no error could be measured.
+
+    Notes
+    -----
+    A prediction with ``t_pred`` outside ``[0, T)`` or an invalid channel is counted
+    as issued and incorrect but excluded from the time-error average.
+    """
     S = truth.S
     N, T = S.shape
     starts_by_channel: dict[int, np.ndarray] = {}
@@ -140,7 +257,36 @@ def _score_predictions(truth: Truth, bursts: list[Burst], predictions: Iterable[
 
 def compute_metrics(truth: Truth, hist: History, predictions: Iterable[Prediction] = (),
                     upto_t: int | None = None, delta_guard: int = 1, dwell_s: float = 1e-3) -> MetricsResult:
-    """Compute every metric over the first ``t`` executed slots (``t = hist.t`` or ``upto_t``)."""
+    """Compute every metric over the first ``t`` executed slots (``t = hist.t`` or ``upto_t``).
+
+    Parameters
+    ----------
+    truth : Truth
+        Ground truth with ``S`` of shape ``(N, T)`` and ``S_by_emitter`` of shape ``(M, N, T)``.
+    hist : History
+        Episode history written by the env; ``actions``, ``obs``, ``rewards``, ``blind``,
+        ``switched`` and ``hist.t`` are read.
+    predictions : iterable of Prediction, optional
+        Predictions to score; only those with ``status == "issued"`` count.  Default is empty.
+    upto_t : int or None, optional
+        Score only the first ``upto_t`` slots; ``None`` (default) uses ``hist.t``.
+    delta_guard : int, optional
+        Half-width of the window around ``t_pred`` within which an occupied cell makes a
+        prediction correct.  Default ``1``.
+    dwell_s : float, optional
+        Dwell duration in seconds, used only for ``intercept_rate_per_s``.  Default ``1e-3``.
+
+    Returns
+    -------
+    MetricsResult
+        Every metric for the first ``t`` slots; zero denominators give ``NaN`` rather
+        than raising.
+
+    Notes
+    -----
+    See the module docstring for the exact definition of each metric.  The
+    ``us_per_decision_*`` fields are left ``NaN`` for the evaluation harness to fill.
+    """
     led = dwell_ledger(truth, hist, upto_t)
     t = led["t"]
     tp, fp, fn, tn = led["tp"], led["fp"], led["fn"], led["tn"]
@@ -218,4 +364,16 @@ def compute_metrics(truth: Truth, hist: History, predictions: Iterable[Predictio
 
 
 def is_nan(x: float) -> bool:
+    """Return ``True`` iff ``x`` is a ``float`` holding ``NaN``.
+
+    Parameters
+    ----------
+    x : float
+        Value to test; non-``float`` inputs (e.g. ``int`` counts) are never ``NaN``.
+
+    Returns
+    -------
+    bool
+        ``True`` when ``x`` is a ``float`` and ``math.isnan(x)``, else ``False``.
+    """
     return isinstance(x, float) and math.isnan(x)

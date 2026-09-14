@@ -25,13 +25,54 @@ MAINLOBE_HALFWIDTH = 1.129  # first null of the sinc^2 pattern in units of the 3
 
 
 def onoff_mask(T: int, start: int, on: int, off: int) -> np.ndarray:
-    """Closed-form duty cycle: ``active[t] = t >= start and ((t - start) % (on + off)) < on``."""
+    """Closed-form duty-cycle mask over ``T`` slots.
+
+    ``active[t] = t >= start and ((t - start) % (on + off)) < on``.  The
+    ``onoff = [start, on, off]`` convention follows rfrl-gym (see the module docstring).
+
+    Parameters
+    ----------
+    T : int
+        Number of time slots; the returned mask has this length.
+    start : int
+        First slot at which the emitter may be active; every earlier slot is off.
+    on : int
+        Number of consecutive active slots in each period.
+    off : int
+        Number of consecutive inactive slots following each ``on`` run.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean array of shape ``(T,)``; ``True`` where the emitter is active.
+    """
     t = np.arange(T, dtype=np.int64)
     return (t >= start) & (((t - start) % (on + off)) < on)
 
 
 class Emitter:
-    """Base class.  ``render(N, T) -> (S_m int8 (N,T), SNR_m float32 (N,T))``."""
+    """Base class for open-loop emitters.
+
+    Subclasses implement :meth:`render`, whose contract is
+    ``render(N, T) -> (S_m int8 (N,T), SNR_m float32 (N,T))``: ``S_m`` is 1 where the
+    emitter is present and ``SNR_m`` holds its per-cell SNR in dB (``-inf`` where absent).
+
+    Parameters
+    ----------
+    name : str
+        Human-readable emitter name, surfaced in ``Truth.emitter_names``.
+    rng : numpy.random.Generator
+        Random generator owned by this emitter; used for any phase / start-channel randomisation.
+
+    Attributes
+    ----------
+    type : str
+        Emitter type tag (``"base"`` here, overridden per subclass), surfaced in ``Truth.emitter_types``.
+    name : str
+        As passed to the constructor.
+    rng : numpy.random.Generator
+        As passed to the constructor.
+    """
 
     type: str = "base"
 
@@ -40,11 +81,64 @@ class Emitter:
         self.rng = rng
 
     def render(self, N: int, T: int) -> tuple[np.ndarray, np.ndarray]:  # pragma: no cover - abstract
+        """Render this emitter's presence and SNR over the full ``(N, T)`` grid.
+
+        Parameters
+        ----------
+        N : int
+            Number of channels.
+        T : int
+            Number of time slots.
+
+        Returns
+        -------
+        S_m : numpy.ndarray
+            ``int8`` array of shape ``(N, T)``; 1 where this emitter is present, else 0.
+        SNR_m : numpy.ndarray
+            ``float32`` array of shape ``(N, T)``; SNR in dB where present, ``-inf`` elsewhere.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; subclasses must override.
+        """
         raise NotImplementedError
 
 
 class PeriodicRadar(Emitter):
-    """Fixed-channel pulsed radar: on for ``on`` slots, off for ``off`` slots, PRI = on + off."""
+    """Fixed-channel pulsed radar.
+
+    On for ``on`` slots, off for ``off`` slots, starting at ``start``; the pulse
+    repetition interval is ``PRI = on + off``.  Presence follows :func:`onoff_mask` on a
+    single channel with a constant SNR.
+
+    Parameters
+    ----------
+    channel : int
+        Channel index the radar occupies.
+    onoff : tuple[int, int, int]
+        ``(start, on, off)`` duty-cycle triple (see :func:`onoff_mask`).
+    snr_db : float
+        SNR in dB written to every active cell.
+    name : str, optional
+        Emitter name.  Default ``"periodic"``.
+    rng : numpy.random.Generator or None, optional
+        Random generator; ``default_rng(0)`` when ``None``.  Only consumed when ``randomize_phase`` is set.
+    randomize_phase : bool, optional
+        If ``True``, offset ``start`` by a uniform draw in ``[0, PRI)`` so the pulse phase is random.
+        Default ``False``.
+
+    Attributes
+    ----------
+    channel : int
+        Occupied channel.
+    start, on, off : int
+        Duty-cycle parameters after any phase randomisation.
+    pri : int
+        Pulse repetition interval ``on + off``.
+    snr_db : float
+        Constant SNR in dB.
+    """
 
     type = "periodic"
 
@@ -59,6 +153,22 @@ class PeriodicRadar(Emitter):
             self.start += int(self.rng.integers(0, self.pri))
 
     def render(self, N: int, T: int) -> tuple[np.ndarray, np.ndarray]:
+        """Render the pulsed on/off pattern on ``channel``.
+
+        Parameters
+        ----------
+        N : int
+            Number of channels.
+        T : int
+            Number of time slots.
+
+        Returns
+        -------
+        S_m : numpy.ndarray
+            ``int8`` array of shape ``(N, T)``; 1 on ``channel`` in active slots, else 0.
+        SNR_m : numpy.ndarray
+            ``float32`` array of shape ``(N, T)``; ``snr_db`` where present, ``-inf`` elsewhere.
+        """
         S = np.zeros((N, T), dtype=np.int8)
         SNR = np.full((N, T), -np.inf, dtype=np.float32)
         mask = onoff_mask(T, self.start, self.on, self.off)
@@ -82,6 +192,51 @@ class AgileJammer(Emitter):
 
     ``transition_matrix`` (row-stochastic over ``channels``) replaces the
     ``p_stay`` / ``hop_probs`` rule when given (stretch S26).
+
+    Parameters
+    ----------
+    channels : tuple[int, ...]
+        Channel indices the jammer hops over; hop-sequence indices refer to positions in this tuple.
+    hop_period : int
+        Number of slots between successive hop decisions.
+    hop_probs : tuple[float, ...] or None
+        Unnormalised weight per entry of ``channels``; uniform when ``None``.  Also the distribution
+        of the initial channel when ``randomize_start`` is set.
+    p_stay : float
+        Probability of staying on the current channel at each hop.
+    onoff : tuple[int, int, int]
+        ``(start, on, off)`` duty-cycle triple (see :func:`onoff_mask`).
+    snr_db : float
+        SNR in dB written to every active cell.
+    name : str, optional
+        Emitter name.  Default ``"agile"``.
+    rng : numpy.random.Generator or None, optional
+        Random generator used for the hop sequence; ``default_rng(0)`` when ``None``.
+    randomize_start : bool, optional
+        If ``True``, draw the initial channel from ``hop_probs``; otherwise start on ``channels[0]``.
+        Default ``False``.
+    transition_matrix : tuple[tuple[float, ...], ...] or None, optional
+        Explicit row-stochastic hop matrix over ``channels`` (rows are renormalised).  When given it
+        overrides the ``p_stay`` / ``hop_probs`` construction.  Default ``None``.
+
+    Attributes
+    ----------
+    channels : tuple[int, ...]
+        Hop set as integers.
+    hop_period : int
+        Slots per hop.
+    p_stay : float
+        Stay probability.
+    start, on, off : int
+        Duty-cycle parameters.
+    snr_db : float
+        Constant SNR in dB.
+    hop_probs : numpy.ndarray
+        Normalised hop weights of shape ``(K,)`` where ``K = len(channels)``.
+    P : numpy.ndarray
+        Row-stochastic hop transition matrix of shape ``(K, K)``.
+    randomize_start : bool
+        Whether the initial channel is drawn at random.
     """
 
     type = "agile"
@@ -119,7 +274,16 @@ class AgileJammer(Emitter):
         self.randomize_start = randomize_start
 
     def stationary_distribution(self) -> np.ndarray:
-        """Left eigenvector of the hop transition matrix (occupancy over ``channels``)."""
+        """Analytic long-run channel occupancy of the hop chain.
+
+        Computed as the left eigenvector of the hop transition matrix ``P`` with eigenvalue 1,
+        normalised to sum to one.
+
+        Returns
+        -------
+        numpy.ndarray
+            Occupancy probability of shape ``(K,)``, aligned with ``channels``.
+        """
         w, v = np.linalg.eig(self.P.T)
         i = int(np.argmin(np.abs(w - 1.0)))
         pi = np.real(v[:, i])
@@ -127,7 +291,21 @@ class AgileJammer(Emitter):
         return pi
 
     def hop_sequence(self, T: int) -> np.ndarray:
-        """Channel index (into ``channels``) for each hop; length ``ceil(T / hop_period)``."""
+        """Draw the channel index (into ``channels``) for each hop.
+
+        The initial index is drawn from ``hop_probs`` when ``randomize_start`` is set, else 0; every
+        subsequent index is sampled from the matching row of ``P`` using ``self.rng``.
+
+        Parameters
+        ----------
+        T : int
+            Number of time slots to cover.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``int64`` array of length ``max(1, ceil(T / hop_period))`` holding positions into ``channels``.
+        """
         n_hops = max(1, math.ceil(T / self.hop_period))
         if self.randomize_start:
             cur = int(self.rng.choice(len(self.channels), p=self.hop_probs))
@@ -145,6 +323,22 @@ class AgileJammer(Emitter):
         return seq
 
     def render(self, N: int, T: int) -> tuple[np.ndarray, np.ndarray]:
+        """Render the hop pattern gated by the on/off duty cycle.
+
+        Parameters
+        ----------
+        N : int
+            Number of channels.
+        T : int
+            Number of time slots.
+
+        Returns
+        -------
+        S_m : numpy.ndarray
+            ``int8`` array of shape ``(N, T)``; exactly one channel is 1 in each active slot, else 0.
+        SNR_m : numpy.ndarray
+            ``float32`` array of shape ``(N, T)``; ``snr_db`` where present, ``-inf`` elsewhere.
+        """
         S = np.zeros((N, T), dtype=np.int8)
         SNR = np.full((N, T), -np.inf, dtype=np.float32)
         seq = self.hop_sequence(T)
@@ -166,6 +360,51 @@ class ScanningRadar(Emitter):
     ``SNR_m - snr_peak_db >= presence_gain_db``.  The first sidelobe is -13.3 dB
     and never registers at the default -10 dB threshold.  Exactly one burst per
     rotation of length ``round(T_rot * 1.667*bw / 360) +- 1`` at -10 dB.
+
+    Parameters
+    ----------
+    channel : int
+        Channel index the radar occupies.
+    T_rot : int
+        Rotation period in slots.
+    beamwidth_deg : float
+        3-dB beamwidth ``bw`` of the antenna pattern in degrees.
+    snr_peak_db : float
+        Boresight SNR in dB.
+    phase0_deg : float, optional
+        Initial azimuth offset in degrees.  Default ``0.0``.
+    presence_gain_db : float, optional
+        Relative gain (dB below peak) at or above which the radar counts as present.  Default ``-10.0``.
+    mode : str, optional
+        Scan mode; only ``"lighthouse"`` is supported.  Default ``"lighthouse"``.
+    name : str, optional
+        Emitter name.  Default ``"scanning"``.
+    rng : numpy.random.Generator or None, optional
+        Random generator; ``default_rng(0)`` when ``None``.  Only consumed when ``randomize_phase`` is set.
+    randomize_phase : bool, optional
+        If ``True``, add a uniform draw in ``[0, 360)`` degrees to ``phase0_deg``.  Default ``False``.
+
+    Attributes
+    ----------
+    mode : str
+        Scan mode.
+    channel : int
+        Occupied channel.
+    T_rot : int
+        Rotation period in slots.
+    beamwidth_deg : float
+        3-dB beamwidth in degrees.
+    snr_peak_db : float
+        Boresight SNR in dB.
+    phase0_deg : float
+        Initial azimuth in degrees after any phase randomisation.
+    presence_gain_db : float
+        Presence threshold relative to peak, in dB.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not ``"lighthouse"``.
     """
 
     type = "scanning"
@@ -188,6 +427,24 @@ class ScanningRadar(Emitter):
             self.phase0_deg = (self.phase0_deg + float(self.rng.uniform(0.0, 360.0))) % 360.0
 
     def render(self, N: int, T: int) -> tuple[np.ndarray, np.ndarray]:
+        """Render the rotating mainlobe sweep on ``channel``.
+
+        Parameters
+        ----------
+        N : int
+            Number of channels.
+        T : int
+            Number of time slots.
+
+        Returns
+        -------
+        S_m : numpy.ndarray
+            ``int8`` array of shape ``(N, T)``; 1 on ``channel`` while the mainlobe illuminates the
+            receiver at or above ``presence_gain_db``, else 0.
+        SNR_m : numpy.ndarray
+            ``float32`` array of shape ``(N, T)``; ``snr_peak_db + 10*log10(gain)`` where present,
+            ``-inf`` elsewhere.
+        """
         S = np.zeros((N, T), dtype=np.int8)
         SNR = np.full((N, T), -np.inf, dtype=np.float32)
         t = np.arange(T, dtype=np.float64)
@@ -204,7 +461,31 @@ class ScanningRadar(Emitter):
 
 
 def build_emitters(cfg: ScenarioConfig, seed: int) -> list[Emitter]:
-    """Instantiate every emitter in ``cfg``; emitter ``i`` uses ``default_rng([seed, i])``."""
+    """Instantiate every emitter in ``cfg``.
+
+    Emitter ``i`` uses ``default_rng([seed, i])`` so each emitter's randomisation is independent of
+    the others and of the scenario's noise stream.  The ``cfg.randomize`` flags decide whether the
+    periodic phase, agile start channel and scanning phase are randomised.
+
+    Parameters
+    ----------
+    cfg : ScenarioConfig
+        Validated scenario; ``cfg.emitters`` is a sequence of ``PeriodicCfg`` / ``AgileCfg`` /
+        ``ScanningCfg`` and ``cfg.randomize`` holds the per-type randomisation flags.
+    seed : int
+        Episode seed.
+
+    Returns
+    -------
+    list[Emitter]
+        Emitter instances in the same order as ``cfg.emitters``.
+
+    Raises
+    ------
+    TypeError
+        If an entry of ``cfg.emitters`` is not one of the known config types (unreachable after
+        scenario validation).
+    """
     out: list[Emitter] = []
     rz = cfg.randomize
     for i, e in enumerate(cfg.emitters):
@@ -231,6 +512,22 @@ def render_truth(cfg: ScenarioConfig | dict | str, seed: int) -> Truth:
     ``S = OR``, ``SNR = max``, ``E = argmax SNR`` (ties -> lowest id), ``U`` from
     ``default_rng([seed, 10_000])``.  Same ``(scenario, seed)`` gives bit-identical
     output for every scheduler (common random numbers).
+
+    Parameters
+    ----------
+    cfg : ScenarioConfig or dict or str
+        Scenario config, raw mapping or path; resolved with :func:`env.scenario.load_scenario`.
+    seed : int
+        Episode seed; drives both the emitters (``default_rng([seed, i])``) and the noise stream ``U``.
+
+    Returns
+    -------
+    Truth
+        Frozen truth with read-only arrays: ``S`` (``int8 (N,T)``, OR over emitters), ``S_by_emitter``
+        (``int8 (M,N,T)``), ``SNR`` (``float32 (N,T)`` dB, ``-inf`` where ``S == 0``), ``E``
+        (``int16 (N,T)`` emitter id with max SNR, ``-1`` where ``S == 0``), ``U`` (``float32 (N,T)``
+        Uniform(0,1)), plus the ``emitter_names`` and ``emitter_types`` tuples.  With no emitters
+        ``S`` / ``SNR`` / ``E`` are all-off.
     """
     cfg = load_scenario(cfg)
     N, T = cfg.N, cfg.T

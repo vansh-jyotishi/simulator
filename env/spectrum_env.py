@@ -12,6 +12,11 @@ Exact ``step(a)`` order for slot ``t``:
    cell was never truly detected before; all active ones are then marked seen.
 3. ``R_t = R_NEW*I_new + R_HIT*O_t - C_EMPTY*(1-O_t) - C_TUNE*switched``
 4. Write ``History[t]``; ``t += 1``; ``truncated = (t == T)``; build info.
+
+``terminated`` is always ``False``; an episode ends only by truncation at
+``t == T``.  The truth is rendered from the ``make_env`` seed and cached:
+``reset()`` without a seed replays the same truth, ``reset(seed=s)`` re-renders
+it.  Every ``step()`` info dict has exactly ``INFO_KEYS`` and never holds truth.
 """
 from __future__ import annotations
 
@@ -28,7 +33,56 @@ from env.scenario import ScenarioConfig, load_scenario, to_mission_spec
 
 
 class SpectrumEnv(gym.Env):
-    """Single-channel receiver over ``N`` channels for ``T`` slots.  See module docstring."""
+    """Single-channel receiver over ``N`` channels for ``T`` slots.
+
+    One episode is ``T`` dwells.  Each :meth:`step` tunes the receiver to one
+    channel and returns the binary observation ``O_t`` plus an info dict with
+    exactly ``INFO_KEYS``.  The hidden truth is rendered once per seed at
+    :meth:`reset` (emitters are open-loop) and is reachable only through
+    :meth:`get_truth`.  See the module docstring for the exact step order and
+    the reward formula.
+
+    Parameters
+    ----------
+    cfg : ScenarioConfig
+        Validated scenario (band size, receiver block, reward magnitudes,
+        emitter list) as returned by :func:`env.scenario.load_scenario`.
+    seed : int
+        Seed the hidden truth is rendered from.  ``reset(seed=None)`` reuses
+        it; it never auto-advances between episodes.
+    receiver : ReceiverModel or None, optional
+        Receiver to drive.  ``None`` (default) builds a :class:`ReceiverModel`
+        from ``cfg.receiver``.  When given, its ``tau_switch`` / ``pfa`` are
+        the ones reported in ``mission_spec``.
+
+    Attributes
+    ----------
+    cfg : ScenarioConfig
+        The scenario the env was built from.
+    N : int
+        Number of channels.
+    T : int
+        Number of slots per episode.
+    receiver : ReceiverModel
+        Receiver in use; sole owner of the previous-channel and blind state.
+    action_space : gymnasium.spaces.Discrete
+        ``Discrete(N)``: the channel index to dwell on.
+    observation_space : gymnasium.spaces.Discrete
+        ``Discrete(2)``: the binary detection ``O_t``.
+    mission_spec : MissionSpec
+        Operator-visible mission spec (never truth), with the receiver's
+        ``tau_switch`` / ``pfa``.
+    initial_channel : int
+        Channel the receiver is parked on before the first dwell.
+    metadata : dict
+        Gymnasium metadata; ``render_modes = ["ansi"]``.
+
+    Notes
+    -----
+    ``terminated`` is always ``False``; the episode ends by truncation when
+    ``t == T``.  Calling :meth:`step` before :meth:`reset`, or after the
+    episode has ended, raises ``RuntimeError``.
+    """
 
     metadata = {"render_modes": ["ansi"]}
 
@@ -70,16 +124,54 @@ class SpectrumEnv(gym.Env):
     # ------------------------------------------------------------------ props
     @property
     def seed(self) -> int:
+        """Truth seed in use (the ``make_env`` seed unless ``reset(seed=...)`` replaced it).
+
+        Returns
+        -------
+        int
+            The seed the hidden truth is rendered from.
+        """
         return self._seed
 
     @property
     def t(self) -> int:
-        """Slots executed so far."""
+        """Slots executed so far.
+
+        Returns
+        -------
+        int
+            ``0`` right after :meth:`reset`, ``T`` once the episode is over.
+        """
         return self._t
 
     # ------------------------------------------------------------------ gym
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[int, dict]:
-        """Start an episode.  ``seed=None`` reuses the ``make_env`` seed (never auto-advances)."""
+        """Start an episode.
+
+        The hidden truth is rendered (or reused from the previous episode when
+        the seed is unchanged), the receiver is parked on ``initial_channel``
+        with no blindness, the seen-emitter set and the history log are
+        cleared and ``t`` is set to ``0``.
+
+        Parameters
+        ----------
+        seed : int or None, optional
+            New truth seed.  ``None`` (default) reuses the ``make_env`` seed;
+            the seed never auto-advances, so consecutive resets without a
+            seed replay the same truth.
+        options : dict or None, optional
+            Accepted for Gymnasium API compatibility and ignored.
+
+        Returns
+        -------
+        obs : int
+            Always ``0``; no dwell has been executed yet.
+        info : dict
+            Info dict with exactly ``INFO_KEYS``: ``t = -1``, ``next_t = 0``,
+            ``action = initial_channel``, ``switched`` and ``blind`` both
+            ``False``, ``blind_remaining = 0``, ``reward = 0.0`` and all-zero
+            ``reward_terms``.
+        """
         if seed is not None:
             self._seed = int(seed)
         super().reset(seed=self._seed)
@@ -113,6 +205,42 @@ class SpectrumEnv(gym.Env):
         return 0, info0
 
     def step(self, action: int) -> tuple[int, float, bool, bool, dict]:
+        """Execute one dwell on channel ``action`` at the current slot ``t``.
+
+        Follows the exact order in the module docstring: the receiver observes
+        the cell, ``I_new`` is computed against the set of emitters already
+        truly detected, the reward is assembled, ``History[t]`` is written and
+        ``t`` advances.
+
+        Parameters
+        ----------
+        action : int
+            Channel to dwell on, in ``[0, N)``.
+
+        Returns
+        -------
+        obs : int
+            ``O_t in {0, 1}``; always ``0`` while the receiver is blind after
+            a retune.
+        reward : float
+            ``R_NEW*I_new + R_HIT*O_t - C_EMPTY*(1-O_t) - C_TUNE*switched``.
+        terminated : bool
+            Always ``False``.
+        truncated : bool
+            ``True`` iff this was slot ``T - 1``; the episode is then over.
+        info : dict
+            Exactly ``INFO_KEYS``: ``t`` (slot just executed), ``next_t``,
+            ``action``, ``switched``, ``blind``, ``blind_remaining``,
+            ``reward`` and ``reward_terms`` (``new`` / ``hit`` / ``empty`` /
+            ``tune``, signed so they sum to ``reward``).  Never contains truth.
+
+        Raises
+        ------
+        RuntimeError
+            If called before :meth:`reset` or after the episode has ended.
+        ValueError
+            If ``action`` is outside ``[0, N)``.
+        """
         if self._done:
             raise RuntimeError("step() called after the episode ended (or before reset())")
         a = int(action)
@@ -159,7 +287,18 @@ class SpectrumEnv(gym.Env):
 
     # ------------------------------------------------------------------ oracle access
     def get_truth(self) -> Truth:
-        """ORACLE / DASHBOARD ONLY.  Never hand this to a scheduler."""
+        """Return the hidden truth.  ORACLE / DASHBOARD ONLY.  Never hand this to a scheduler.
+
+        Renders the truth for the current seed on first use, so it may be
+        called before :meth:`reset`.
+
+        Returns
+        -------
+        Truth
+            Frozen :class:`common.types.Truth` for the current seed: ``S``,
+            ``S_by_emitter``, ``SNR``, ``E``, ``U`` and the emitter names and
+            types.
+        """
         if self._truth is None:
             self._truth = render_truth(self.cfg, self._seed)
             self._truth_seed = self._seed
@@ -168,7 +307,20 @@ class SpectrumEnv(gym.Env):
         return self._truth
 
     def get_history(self) -> History:
-        """Live views of the episode log; slots ``>= t`` are unfilled (-1 / 0)."""
+        """Return live views of the episode log.
+
+        The arrays are the env's own buffers, not copies, so a
+        :class:`History` fetched once stays current as the episode advances.
+        Slots ``>= t`` are unfilled (``-1`` for ``actions``, ``0`` / ``False``
+        elsewhere).
+
+        Returns
+        -------
+        History
+            ``actions``, ``obs``, ``blind``, ``switched``, ``new_detect`` and
+            ``rewards`` arrays of length ``T`` plus ``t``, the number of
+            slots executed so far.
+        """
         return History(
             actions=self._h_actions, obs=self._h_obs, blind=self._h_blind, switched=self._h_switched,
             new_detect=self._h_new, rewards=self._h_rewards, t=self._t,
@@ -181,6 +333,24 @@ class SpectrumEnv(gym.Env):
         Rows are channels (0-based).  ``#`` truth on, ``.`` truth off; the receiver's
         track overlays ``@`` true positive, ``x`` blind dwell, ``?`` false alarm,
         ``o`` visited empty, ``m`` visited occupied but missed.
+
+        Parameters
+        ----------
+        width : int, optional
+            Number of slots to show, default ``100``.  The window is
+            ``[max(0, t - width), t)``; before the first step it is the first
+            ``min(width, T)`` slots of truth with no track overlay.
+
+        Returns
+        -------
+        str
+            A header ``SpectrumEnv <name> seed=<seed> t=<t>/<T> slots [t0,t1)``
+            followed by one ``"<n> |<chars>"`` line per channel.
+
+        Notes
+        -----
+        Uses :meth:`get_truth`, so this is for the dashboard and debugging
+        only; never expose the output to a scheduler.
         """
         truth = self.get_truth()
         t1 = self._t
@@ -214,7 +384,36 @@ class SpectrumEnv(gym.Env):
 
 
 def make_env(scenario: str | Path | dict, seed: int, receiver: ReceiverModel | None = None) -> SpectrumEnv:
-    """Build the env.  ``receiver`` overrides the scenario's receiver block (its ``tau_switch``/``pfa`` win)."""
+    """Build the env from a scenario file or dict.
+
+    Parameters
+    ----------
+    scenario : str or Path or dict
+        Scenario JSON path (relative paths resolve against the cwd, then the
+        repo root) or an in-memory dict of the same shape; handed to
+        :func:`env.scenario.load_scenario`.
+    seed : int
+        Truth seed handed to :class:`SpectrumEnv`.
+    receiver : ReceiverModel or None, optional
+        Overrides the scenario's receiver block (its ``tau_switch`` / ``pfa``
+        win and are what ``mission_spec`` reports).  ``None`` (default) builds
+        the receiver from the scenario.
+
+    Returns
+    -------
+    SpectrumEnv
+        Un-reset environment; call :meth:`SpectrumEnv.reset` before stepping.
+
+    Raises
+    ------
+    ValueError
+        From :func:`env.scenario.load_scenario` for every contract violation,
+        naming the offending field.
+    FileNotFoundError
+        If ``scenario`` is a path found neither in the cwd nor the repo root.
+    TypeError
+        If ``scenario`` is neither a path nor a dict.
+    """
     cfg = load_scenario(scenario)
     return SpectrumEnv(cfg, seed, receiver)
 

@@ -20,7 +20,7 @@ from baselines.round_robin import RoundRobin
 from baselines.weighted_priority import WeightedPriority
 from common.protocol import sanitize_info
 from common.types import INFO_KEYS
-from env.receiver_model import PassThroughReceiver, ReceiverModel, albersheim_pd
+from env.receiver_model import PassThroughReceiver, albersheim_pd
 from env.spectrum_env import make_env
 from eval.run_comparison import parse_seeds
 from oracle.metrics_engine import compute_metrics
@@ -114,6 +114,15 @@ def test_3_hop_recovered():
     assert np.all(changes % hp == 0)
     assert abs(stay - p_stay) < 0.03
     assert np.all(np.abs(occ - pi) < 0.03)
+    # literal plan clause "occupancy vs hop_probs +- 0.03": holds exactly when hop_probs is uniform (INTERFACE C4)
+    scu = _base(T=20000, emitters=[{"type": "agile", "name": "j", "channels": [1, 2, 3, 4], "hop_probs": None,
+                                    "hop_period": hp, "p_stay": 0.0, "onoff": [0, 19998, 1], "snr_db": 9.0}])
+    envu = make_env(scu, 0)
+    envu.reset()
+    chan_u = envu.get_truth().S.argmax(axis=0)[:L]
+    occ_u = np.bincount(chan_u, minlength=8)[1:5] / len(chan_u)
+    _say("hop uniform", "occupancy == hop_probs = 0.25 each (+-0.03)", occ_u.round(3).tolist())
+    assert np.all(np.abs(occ_u - 0.25) < 0.03)
 
 
 # 4 ---------------------------------------------------------------- overlap

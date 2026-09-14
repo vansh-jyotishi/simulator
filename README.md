@@ -2,18 +2,20 @@
 
 Closed-loop scan-strategy testbed for intercepting unknown emitters with a **single-channel receiver**. The simulator holds a hidden truth matrix `S` (N channels × T slots), returns noisy Bernoulli observations under retune blindness, and prints one side-by-side comparison table over identical and held-out seeds. Schedulers plug in through the frozen contract in [INTERFACE.md](INTERFACE.md) and never see the truth.
 
-**Say the limitations first:** open-loop, non-adversarial emitters; single-channel receiver; single-pulse Albersheim Bernoulli detection with a documented low-SNR blend; truth pre-rendered at `reset()`; sensor Pd excludes blind dwells while effective Pd counts them as misses (both printed); a false alarm earns `R_hit` and a blind dwell pays `C_empty`.
+**Say the limitations first:** open-loop, non-adversarial emitters; single-channel receiver; single-pulse Albersheim Bernoulli detection with a documented low-SNR blend; truth pre-rendered at `reset()`; sensor Pd excludes blind dwells while effective Pd counts them as misses (both printed); a false alarm earns `R_hit` and a blind dwell pays `C_empty`; the scanning radar supports only `mode="lighthouse"` (the optional `band_sweep` mode from the build doc is not implemented).
 
 ## Setup (Python 3.12, one shared venv)
 
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\pip install -r requirements.txt      # numba first so numpy is pinned compatibly
-.venv\Scripts\python -m pytest -q                   # ~100 tests, < 10 s
-.venv\Scripts\python -m pytest tests/verify_sim.py -q -s   # black-box physics checks, prints configured vs recovered
+.venv\Scripts\python -m pytest -q                   # 88 unit/contract tests, ~5 s
+.venv\Scripts\python -m pytest tests/verify_sim.py -q -s   # 13 black-box physics cases, prints configured vs recovered
 ```
 
-Python 3.14 is not supported (no Numba wheels). New packages go through the simulator owner.
+Run every command from the repo root: nothing is pip-installed, `pytest.ini` puts the root on `sys.path`, and the snippets below assume the same (or set `PYTHONPATH` to the repo root). Python 3.14 is not supported (no Numba wheels). New packages go through the simulator owner.
+
+**Repo location and backup.** The working repo lives in this OneDrive folder by the owner's decision (the build plan preferred `C:\dev`). The `origin` remote is a bare backup repository outside OneDrive at `C:\dev\smart-scan-ew.git`; `main`, `contract-v1` and `v0.1-sim` are pushed there after every commit. To hand off through GitHub, create the repository and run `git remote add github <url>` then `git push github main --tags`; teammates code against the `contract-v1` tag. Checkpoint work for CK1 to CK3 landed in the commits `98bffbf` and `0b392ad` rather than one commit per checkpoint; each results table records the code SHA in its header.
 
 ## Minimal loop (10 lines)
 
@@ -116,7 +118,7 @@ Seeding: emitter `i` uses `default_rng([seed, i])`, noise `U` uses `default_rng(
 
 ## Performance (N=50, T=5000, this laptop)
 
-`reset()` with a fresh seed ≈ 35 ms (truth render), ≈ 0.3 ms when the seed is unchanged; `step()` ≈ 7 µs mean; round_robin ≈ 0.7 µs per decision.
+`reset()` with a fresh seed ≈ 30–45 ms (truth render), well under 1 ms when the seed is unchanged; `step()` ≈ 7–10 µs mean over 5000 steps; round_robin ≈ 0.7 µs per decision. The baselines are not tuned for the 15 µs candidate budget: weighted_priority averages ≈ 4 µs but its p99 over a short 300-step run can exceed 15 µs because of first-call overhead.
 
 ## Notes on the borrowed ideas and known corrections
 
