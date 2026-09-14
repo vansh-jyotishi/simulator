@@ -1,0 +1,1 @@
+# dashboard/ — owned by the dashboard team (Streamlit). Simulator never edits this folder. Use `env.get_truth()`, `env.get_history()`, `oracle.metrics_engine.compute_metrics(truth, hist, upto_t=t)` and `env.render()`; channels are 0-based in code (add +1 for display).

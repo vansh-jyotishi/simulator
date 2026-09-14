@@ -1,0 +1,18 @@
+[project]
+name = "smart-scan-ew"
+version = "0.1.0"
+description = "SIH 26055 RF environment simulator: hidden truth matrix, noisy single-channel receiver with retune blindness, oracle metrics and baseline schedulers."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numba>=0.59",
+    "numpy",
+    "gymnasium>=0.29",
+    "scipy>=1.12",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["common", "env", "oracle", "baselines", "eval", "schedulers", "estimators", "dashboard"]

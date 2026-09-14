@@ -1,0 +1,8 @@
+.venv/
+results/
+__pycache__/
+.pytest_cache/
+*.csv
+*.npz
+!results/baselines_v0.1.*
+!results/comparison.md

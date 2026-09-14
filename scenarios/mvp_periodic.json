@@ -1,0 +1,21 @@
+{
+  "name": "mvp_periodic",
+  "N": 50,
+  "T": 2000,
+  "dwell_s": 0.001,
+  "receiver": {
+    "tau_switch": 1,
+    "pfa": 0.05,
+    "noise_model": "fixed",
+    "pd_fixed": 0.85,
+    "n_pulses": 1,
+    "initial_channel": 0
+  },
+  "reward": {"R_new": 10.0, "R_hit": 2.0, "C_empty": 0.5, "C_tune": 1.5},
+  "intel_weights": null,
+  "randomize": {"periodic_phase": false, "agile_start_channel": false, "scanning_phase": false},
+  "emitters": [
+    {"type": "periodic", "name": "radar_A", "channel": 7, "onoff": [0, 3, 14], "snr_db": 12.0},
+    {"type": "periodic", "name": "radar_B", "channel": 33, "onoff": [4, 5, 18], "snr_db": 12.0}
+  ]
+}
