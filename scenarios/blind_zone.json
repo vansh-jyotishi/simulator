@@ -1,0 +1,7 @@
+{"name":"blind_zone","N":10,"T":2000,"dwell_s":0.001,
+ "receiver":{"tau_switch":1,"pfa":0.05,"noise_model":"fixed","pd_fixed":0.85,"n_pulses":1,"initial_channel":0},
+ "reward":{"R_new":10.0,"R_hit":2.0,"C_empty":0.5,"C_tune":1.5},
+ "intel_weights":[1,1,1,1,1,10,1,1,1,1],
+ "randomize":{"periodic_phase":false,"agile_start_channel":false,"scanning_phase":false},
+ "emitters":[
+  {"type":"periodic","name":"harmonic_radar","channel":5,"onoff":[1,1,19],"snr_db":12.0}]}

@@ -1,0 +1,10 @@
+{"name":"heldout_mix","N":50,"T":5000,"dwell_s":0.001,
+ "receiver":{"tau_switch":1,"pfa":1e-3,"noise_model":"albersheim","pd_fixed":0.85,"n_pulses":1,"initial_channel":0},
+ "reward":{"R_new":10.0,"R_hit":2.0,"C_empty":0.5,"C_tune":1.5}, "intel_weights":null,
+ "randomize":{"periodic_phase":true,"agile_start_channel":true,"scanning_phase":true},
+ "emitters":[
+  {"type":"periodic","name":"radar_C","channel":12,"onoff":[3,4,25],"snr_db":11.0},
+  {"type":"periodic","name":"radar_D_weak","channel":45,"onoff":[0,6,55],"snr_db":3.0},
+  {"type":"agile","name":"jammer_2","channels":[2,3,4,5],"hop_probs":null,"hop_period":6,"p_stay":0.3,"onoff":[0,60,15],"snr_db":8.0},
+  {"type":"agile","name":"jammer_3","channels":[30,31,32,33,34,35,36,37],"hop_probs":[0.3,0.2,0.1,0.1,0.1,0.1,0.05,0.05],"hop_period":12,"p_stay":0.1,"onoff":[10,100,30],"snr_db":10.0},
+  {"type":"scanning","name":"search_radar_2","mode":"lighthouse","channel":27,"T_rot":170,"beamwidth_deg":15.0,"phase0_deg":90.0,"snr_peak_db":14.0,"presence_gain_db":-10.0}]}

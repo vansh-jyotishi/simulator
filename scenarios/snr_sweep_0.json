@@ -1,0 +1,38 @@
+{
+ "name": "snr_sweep_0",
+ "N": 4,
+ "T": 5000,
+ "dwell_s": 0.001,
+ "receiver": {
+  "tau_switch": 0,
+  "pfa": 0.001,
+  "noise_model": "albersheim",
+  "n_pulses": 1,
+  "initial_channel": 0
+ },
+ "reward": {
+  "R_new": 10.0,
+  "R_hit": 2.0,
+  "C_empty": 0.5,
+  "C_tune": 1.5
+ },
+ "intel_weights": null,
+ "randomize": {
+  "periodic_phase": false,
+  "agile_start_channel": false,
+  "scanning_phase": false
+ },
+ "emitters": [
+  {
+   "type": "periodic",
+   "name": "always_on",
+   "channel": 1,
+   "onoff": [
+    0,
+    4998,
+    1
+   ],
+   "snr_db": 0.0
+  }
+ ]
+}
