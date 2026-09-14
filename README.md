@@ -4,7 +4,30 @@ Closed-loop scan-strategy testbed for intercepting unknown emitters with a **sin
 
 **Say the limitations first:** open-loop, non-adversarial emitters; single-channel receiver; single-pulse Albersheim Bernoulli detection with a documented low-SNR blend; truth pre-rendered at `reset()`; sensor Pd excludes blind dwells while effective Pd counts them as misses (both printed); a false alarm earns `R_hit` and a blind dwell pays `C_empty`; the scanning radar supports only `mode="lighthouse"` (the optional `band_sweep` mode from the build doc is not implemented).
 
-## Setup (Python 3.12, one shared venv)
+## Quick start — one command
+
+Clone the repository and run the launcher. It installs Python 3.12 if missing, creates the virtual environment, installs every pinned dependency, runs all 101 checks and prints the comparison table.
+
+```powershell
+git clone https://github.com/vansh-jyotishi/simulator.git
+cd simulator
+.\run.cmd          # Windows — or just double-click run.cmd
+```
+
+```bash
+git clone https://github.com/vansh-jyotishi/simulator.git
+cd simulator
+chmod +x run.sh && ./run.sh    # Linux / macOS
+```
+
+Running it again is safe: completed steps are skipped. After setup, the live ASCII waterfall is:
+
+```powershell
+.venv\Scripts\python.exe -m eval.show_waterfall --slots 120
+.venv\Scripts\python.exe -m eval.show_waterfall --scheduler clairvoyant --slots 120
+```
+
+## Setup by hand (Python 3.12, one shared venv)
 
 ```powershell
 py -3.12 -m venv .venv
