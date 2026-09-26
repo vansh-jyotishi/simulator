@@ -94,9 +94,6 @@ echo
 bold "=========================================================="
 bold " Everything works."
 echo
-echo " To open the visual dashboard in your browser:"
-echo "     .venv/bin/python -m dashboard.build"
-echo
 echo " To see the live ASCII waterfall:"
 echo "     .venv/bin/python -m eval.show_waterfall"
 echo
