@@ -20,7 +20,13 @@ cd simulator
 chmod +x run.sh && ./run.sh    # Linux / macOS
 ```
 
-Running it again is safe: completed steps are skipped. After setup, the live ASCII waterfall is:
+Running it again is safe: completed steps are skipped. After setup, open the visual dashboard (a 50-channel waterfall with the receiver's scan track and live metrics):
+
+```powershell
+.venv\Scripts\python.exe -m dashboard.build
+```
+
+Or watch the same mission as an ASCII waterfall in the terminal:
 
 ```powershell
 .venv\Scripts\python.exe -m eval.show_waterfall --slots 120
